@@ -10,17 +10,19 @@ import mhv4lib
 import time
 from serial.tools import list_ports
 import threading
-import queues
+import queues #File with definition of queue and queue elements
 
-RAMP_VOLTAGE_STEP = 1
-RAMP_WAIT_TIME = 2
-VOLTAGE_LIMIT = 100
+RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
+RAMP_WAIT_TIME = 2	# the time between to voltage steps
+VOLTAGE_LIMIT = 100	# maximal voltage which can be applied
 USING_NEW_FIRMWARE = True
-START_VOLTAGE=0.1
-UPDATE_TIME=3
+START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
+UPDATE_TIME=3		# the voltages and currents are updated in the GUI every 3 s
 
-#Threads--------------------------------------------------------------------------
-#Definition of Event to change voltage
+#------------------------Defintion of events----------------------------------------------
+#The events are necessary to prevent the GUI from freezing. For any change in the appearance of the GUI, an event is used.
+#The events are binded to a specific method which is called by the event.
+#Event for changing voltage
 myEVT_COUNT = wx.NewEventType()
 EVT_COUNT = wx.PyEventBinder(myEVT_COUNT, 1)
 class CountEvent(wx.PyCommandEvent):
@@ -37,6 +39,7 @@ class CountEvent(wx.PyCommandEvent):
            """
            return self._value
 
+#Event for enable or disable a channel.
 myEnableChange = wx.NewEventType()
 EVT_EnableChange = wx.PyEventBinder(myEnableChange, 1)
 class EnableChange(wx.PyCommandEvent):
@@ -53,6 +56,7 @@ class EnableChange(wx.PyCommandEvent):
            """
            return self._value
 
+#Event for changing the polarity of a channel.
 myPolarityChange = wx.NewEventType()
 EVT_PolarityChange = wx.PyEventBinder(myPolarityChange, 1)
 class PolarityChange(wx.PyCommandEvent):
@@ -69,6 +73,7 @@ class PolarityChange(wx.PyCommandEvent):
            """
            return self._value
 
+#Event for updating the displayed values.
 myUpdate = wx.NewEventType()
 EVT_Update = wx.PyEventBinder(myUpdate, 1)
 class Update(wx.PyCommandEvent):
@@ -85,9 +90,9 @@ class Update(wx.PyCommandEvent):
            """
            return self._value
 
-#-------------------Events------------------------------------------------
-
-#Thread to check if the current voltage is the wanted voltage
+#-------------------Thread------------------------------------------------
+#Thread which checks every 3 s (UPDATE_TIME) the current values and in between if any button was pressed. 
+#If so, the voltage / polarity or are changed, or the channel will be turned on or off.
 class CheckAndUpdater(threading.Thread):
 	def __init__(self,unitView):
 		"""
@@ -103,26 +108,22 @@ class CheckAndUpdater(threading.Thread):
 		when you call Thread.start().
 		"""
 		while 1:
-			if self._parent.Vqueue.isEmpty()==False:
+			if self._parent.Vqueue.isEmpty()==False: #Check if there is an element in the voltage change queue
 				element=self._parent.Vqueue.root
 				while element!=None:
 					i=element.channel
-					#cur=self._parent.channelViews[i].unit.mhv4unit.channels[i].voltage
-					#time.sleep(0.1) #if not the readvoltage command comes to fast
-					#self._updateCounter=self._updateCounter+0.1
-					cur=self._parent.channelViews[i].unit.mhv4unit.getVoltage(i)
+					cur=self._parent.channelViews[i].unit.mhv4unit.getVoltage(i) #get the current voltage of the channel
 					#time.sleep(0.1) 
-					#self._updateCounter=self._updateCounter+0.1
-					wan=self._parent.channelViews[i].wantedVoltage
+					wan=self._parent.channelViews[i].wantedVoltage #get the wanted voltage
 					if cur==0:
 						print("Voltage of channel "+str(i)+" of unit "+self._parent.mhv4unit.name+" turned unexpectedly to zero!")
-						self._parent.channelViews[i].changeVol=False
+						self._parent.channelViews[i].changeVol=False #Ramping will be stopped and the element removed from the queue
 						b=element.next
 						self._parent.Vqueue.remove(element)
 						element=b
 					else:
 						if (cur != wan):
-							if abs(cur-wan) <= RAMP_VOLTAGE_STEP:
+							if abs(cur-wan) <= RAMP_VOLTAGE_STEP: 
 								self._parent.channelViews[i].changeVol=False
 								Cvalue = wan
 								b=element.next
@@ -132,21 +133,19 @@ class CheckAndUpdater(threading.Thread):
 								element=element.next
 								if (wan - cur > 0) : Cvalue=cur+RAMP_VOLTAGE_STEP# going up	
 								else : Cvalue = cur-RAMP_VOLTAGE_STEP # coming down
-							evt = CountEvent(myEVT_COUNT, -1, Cvalue)
-							wx.PostEvent(self._parent.channelViews[i], evt)
-							cur=self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,Cvalue)
+							evt = CountEvent(myEVT_COUNT, -1, Cvalue) #create the event that tells the GUI to update
+							wx.PostEvent(self._parent.channelViews[i], evt) 
+							cur=self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,Cvalue) #set the new voltage
 						else:
 							b=element.next
-							self._parent.Vqueue.remove(element)
+							self._parent.Vqueue.remove(element) #if the wanted voltage is equal to the current, remove elment from the queue
 							element=b
 			
-			if self._parent.Pqueue.isEmpty()==False:
+			if self._parent.Pqueue.isEmpty()==False: #Check if there is an element in the changing polarity and enable/disable queue
 				element=self._parent.Pqueue.root
 				while element!=None:
-					#time.sleep(0.1) 
-					#self._updateCounter=self._updateCounter+0.1
 					i=element.channel
-					if(element.option==1):
+					if(element.option==1): #Option 1 is enable/disable a channel
 						newvalue=element.value
 						evt1 = EnableChange(myEnableChange, -1, newvalue)
 						wx.PostEvent(self._parent.channelViews[i], evt1)
@@ -155,7 +154,7 @@ class CheckAndUpdater(threading.Thread):
 							self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,START_VOLTAGE)
 						if 0 == newvalue : 
 							self._parent.channelViews[i].unit.mhv4unit.disableChannel(i)
-					else:
+					else: #a change in the polarity was requested
 						newpolarity=element.value
 						evt2 = PolarityChange(myPolarityChange, -1, 1)
 						wx.PostEvent(self._parent.channelViews[i], evt2)
@@ -166,27 +165,18 @@ class CheckAndUpdater(threading.Thread):
 					element=b
 					
 			time.sleep(RAMP_WAIT_TIME)
-			self._updateCounter=self._updateCounter+1
+			self._updateCounter=self._updateCounter+RAMP_WAIT_TIME
 			
 			if self._updateCounter>=UPDATE_TIME:
 				self._updateCounter=0
-				#self._parent.mhv4unit.updateValues()
-				print(self._parent.mhv4unit.name+"Check started")
+				#print(self._parent.mhv4unit.name+"Check started")
 				for i in range(4):
 					self._parent.mhv4unit.updateValues(i)
 					evt3 = Update(myUpdate, -1, 1)
 					wx.PostEvent(self._parent.channelViews[i], evt3)
-					#self._parent.channelViews[i].updateValues()
 					time.sleep(0.1)
 					self._updateCounter=self._updateCounter+0.1
-				#time.sleep(2)
-				#self._updateCounter=self._updateCounter+1
-				print(self._parent.mhv4unit.name+"Check ended")
-				#time.sleep(3)
-			#time.sleep(0.1)
-			#self._updateCounter=self._updateCounter+0.1
-			
-
+				#print(self._parent.mhv4unit.name+"Check ended")
 
 #------------------------------------------------------------------------------------------#
 
@@ -249,7 +239,8 @@ class Unit:
 				if self.channels[ch.channel].enabled == 0 and self.getVoltagePreset(ch.channel)!=0:
 					self.setVoltage(ch.channel,0)
 				time.sleep(0.1)
-	#checks in the beginning if there are channels which are turned off but don't have voltage
+	
+	#if the voltage of a channel is zero, it will be turned off when starting the GUI
 	def startCheck(self):
 		for ch in self.channels:
 			ch.voltage = self.getVoltage(ch.channel)
@@ -260,33 +251,9 @@ class Unit:
 		if self.getVoltage(channel) > 0.1 : 
 			print("Unit %s channel %d is already ON ?" % (self.name, channel) )
 			return
-		'''	
-		voltagePreset = 0 # Voltage to be ramped to
-		if USING_NEW_FIRMWARE :
-			voltagePreset = self.getVoltagePreset(channel)
-			
-		self.setVoltage(channel,0)
-		time.sleep(RAMP_WAIT_TIME)
-		self.mhv4.set_on(channel)
-		time.sleep(RAMP_WAIT_TIME)		
-		self.setVoltage(channel,voltagePreset)
-		'''
 		self.mhv4.set_on(channel)
 	
 	def disableChannel(self,channel):
-		'''
-		curvoltage = self.getVoltage(channel)	
-		while curvoltage > 0.1:
-			self.mhv4.set_voltage(channel, max( 0, int(curvoltage)-RAMP_VOLTAGE_STEP ))
-			time.sleep(RAMP_WAIT_TIME)
-			curvoltage = self.getVoltage(channel)
-			self.updateValues(channel)			
-
-		self.mhv4.set_off(channel)
-		time.sleep(RAMP_WAIT_TIME)
-		self.channels[channel].enabled = 0
-		self.updateValues(channel)
-		'''
 		self.mhv4.set_off(channel)
 	
 	def setPolarity(self,channel,pol):
@@ -340,10 +307,7 @@ class ChannelView(wx.StaticBox):
 		self.number = number
 		self.unit = parent
 
-		#For Voltage change
-		#self.wantedVoltage=0.0
-		#self.wantedVoltage=self.unit.mhv4unit.channels[self.number].voltage
-		#For Enable/Disable, change Polarity
+		#For Enable/Disable, change Polarity (elements are put in the queue only if these values are false
 		self.EnDisable=False
 		self.changePol=False
 		self.changeVol=False
@@ -398,7 +362,6 @@ class ChannelView(wx.StaticBox):
 		self.updateValues()               # Update GUI with the initial values
 		
 	def updateValues(self):
-		#self.unit.mhv4unit.updateValues(self.number)
 		curvoltage = self.unit.mhv4unit.channels[self.number].voltage
 		curcurrent = self.unit.mhv4unit.channels[self.number].current
 		curpolarity = self.unit.mhv4unit.channels[self.number].polarity
@@ -418,7 +381,6 @@ class ChannelView(wx.StaticBox):
 		self.enablerb.SetSelection(curenablesel)
 
 	def updateValuesEvent(self,evt3):
-		#self.unit.mhv4unit.updateValues(self.number)
 		curvoltage = self.unit.mhv4unit.channels[self.number].voltage
 		curcurrent = self.unit.mhv4unit.channels[self.number].current
 		curpolarity = self.unit.mhv4unit.channels[self.number].polarity
@@ -439,45 +401,36 @@ class ChannelView(wx.StaticBox):
 		
 	def OnClickSetVoltageButton(self, event):
 		newvoltage = float( self.setVoltageValue.GetValue() )
-		#self.unit.mhv4unit.setVoltage(self.number,newvoltage)
 		if self.unit.mhv4unit.channels[self.number].enabled==0:
 			print("Channel %d of unit %s is turned OFF, turn it ON first" % (self.number,self.unit.mhv4unit.name) )
 			return
-		
 		
 		if newvoltage > VOLTAGE_LIMIT: 
 			print("Set voltage too high (limit is " + str(VOLTAGE_LIMIT) + " V).")
 			return
 		print("Set voltage of unit %s channel %d to %.2f" % (self.unit.mhv4unit.name, self.number, newvoltage) )
 		self.wantedVoltage=newvoltage
-		if self.changeVol==False:
+		if self.changeVol==False: #if the channel is not already in the voltage change queue, an element representing the channel is put in the queue
 			self.changeVol=True
 			self.unit.Vqueue.add(queues.Element(self.number))
 
 	def voltageChange(self,evt):
 		newvoltage=evt.GetValue()
 		self.unit.mhv4unit.channels[self.number].voltage = newvoltage
-		#self.unit.mhv4unit.mhv4.set_voltage(self.number,newvoltage)
 		self.voltageValue.SetValue(str(newvoltage))
 		
 		
 	def EvtPolarityRadioBox(self, event):
 		if self.unit.mhv4unit.channels[self.number].enabled == 1 or self.unit.mhv4unit.channels[self.number].voltage > 0.1 :
 			print("Unit %s Channel %d is ON. Turn it off first." % (self.unit.mhv4unit.name, self.number) )
-			#selection = 1 if (self.unit.mhv4unit.channels[self.number].polarity == 0) else 0
-			#self.polrb.SetSelection(selection)
 			return
 		
 		selection = self.polrb.GetSelection()
 		newpolarity = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
 		print("Set polarity of unit %s channel %d to %d" % (self.unit.mhv4unit.name, self.number, newpolarity) )
 			
-		#self.unit.mhv4unit.setPolarity(self.number,newpolarity)
-		#self.changePol=False
 		curpolaritysel = 1 if (newpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
-		self.polrb.SetSelection(curpolaritysel)
-		#self.updateValues()		
-
+		self.polrb.SetSelection(curpolaritysel)		
 		self.unit.Pqueue.add(queues.Element2(self.number,0,newpolarity))
 		
 
@@ -490,36 +443,22 @@ class ChannelView(wx.StaticBox):
 	def EvtEnableRadioBox(self, event):
 		selection = self.enablerb.GetSelection()
 		if selection==1 and self.unit.mhv4unit.channels[self.number].voltage>0:
-			#print("Ramp down the voltage to 0 of channel %d of unit %s before turning it OFF" % (self.number,self.unit.mhv4unit.name) )
-			self.wantedVoltage=0
+			self.wantedVoltage=0 #instead of turning the channel directly off an element is put in the voltage change queue changing the voltage to zero
 			if self.changeVol==False:
 				self.changeVol=True
 				print("Set voltage of unit %s channel %d to %.2f" % (self.unit.mhv4unit.name, self.number, 0) )
 				self.unit.Vqueue.add(queues.Element(self.number))
 			
-		#self.EnDisable=True
 		else:
 			newvalue = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
 			print("Set enable of unit %s channel %d to %d" % (self.unit.mhv4unit.name, self.number, newvalue) )
 			self.unit.mhv4unit.channels[self.number].enabled = newvalue
 			self.unit.Pqueue.add(queues.Element2(self.number,1,newvalue))
-			#self.unit.mhv4unit.channels[self.number].enabled = newvalue
-			#selection = self.enablerb.GetSelection()
-			
-		
-			
-		#self.updateValues()
 
 	def EnDisabler(self, evt2):
 		newvalue=evt2.GetValue()
 		if 1 == newvalue :
 			self.voltageValue.SetValue(str(START_VOLTAGE))			
-			#self.unit.mhv4unit.enableChannel(self.number)
-			#self.unit.mhv4unit.mhv4.set_voltage(self.number,START_VOLTAGE)
-		#if 0 == newvalue : 
-		#	self.unit.mhv4unit.disableChannel(self.number)
-			
-		
 		self.unit.mhv4unit.channels[self.number].enabled = newvalue
 		self.EnDisable=False
 		selection = 1 if (newvalue == 0) else 0 
