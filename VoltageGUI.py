@@ -113,7 +113,8 @@ class CheckAndUpdater(threading.Thread):
 				while element!=None:
 					i=element.channel
 					cur=self._parent.channelViews[i].unit.mhv4unit.getVoltage(i) #get the current voltage of the channel
-					#time.sleep(0.1) 
+					time.sleep(0.1) 
+					self._updateCounter=self._updateCounter+0.1
 					wan=self._parent.channelViews[i].wantedVoltage #get the wanted voltage
 					if cur==0:
 						print("Voltage of channel "+str(i)+" of unit "+self._parent.mhv4unit.name+" turned unexpectedly to zero!")
@@ -136,6 +137,8 @@ class CheckAndUpdater(threading.Thread):
 							evt = CountEvent(myEVT_COUNT, -1, Cvalue) #create the event that tells the GUI to update
 							wx.PostEvent(self._parent.channelViews[i], evt) 
 							cur=self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,Cvalue) #set the new voltage
+							time.sleep(0.1) 
+							self._updateCounter=self._updateCounter+0.1
 						else:
 							b=element.next
 							self._parent.Vqueue.remove(element) #if the wanted voltage is equal to the current, remove elment from the queue
@@ -151,14 +154,22 @@ class CheckAndUpdater(threading.Thread):
 						wx.PostEvent(self._parent.channelViews[i], evt1)
 						if 1 == newvalue :
 							self._parent.channelViews[i].unit.mhv4unit.enableChannel(i)
+							time.sleep(0.1) 
+							self._updateCounter=self._updateCounter+0.1
 							self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,START_VOLTAGE)
+							time.sleep(0.1) 
+							self._updateCounter=self._updateCounter+0.1
 						if 0 == newvalue : 
 							self._parent.channelViews[i].unit.mhv4unit.disableChannel(i)
+							time.sleep(0.1) 
+							self._updateCounter=self._updateCounter+0.1
 					else: #a change in the polarity was requested
 						newpolarity=element.value
 						evt2 = PolarityChange(myPolarityChange, -1, 1)
 						wx.PostEvent(self._parent.channelViews[i], evt2)
 						self._parent.channelViews[i].unit.mhv4unit.setPolarity(i,newpolarity)
+						time.sleep(0.1) 
+						self._updateCounter=self._updateCounter+0.1
 						#self._parent.channelViews[i].changePol=False
 					b=element.next
 					self._parent.Pqueue.remove(element)
