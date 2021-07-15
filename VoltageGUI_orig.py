@@ -11,9 +11,6 @@ import time
 from serial.tools import list_ports
 import threading
 import queues #File with definition of queue and queue elements
-import requests
-import urllib3
-
 
 RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
 RAMP_WAIT_TIME = 2	# the time between to voltage steps
@@ -238,8 +235,6 @@ class Unit:
 			elif self.channels[channel].voltage==0:
 				self.mhv4.set_off(channel)
 				self.channels[channel].enabled = 0
-			self.send_to_influx(self.name, channel, 'actual', self.channels[channel].voltage)
-			self.send_to_influx(self.name, channel, 'current', self.channels[channel].current)
 			
 			
 		else :	# update on all channels in the unit
@@ -254,10 +249,7 @@ class Unit:
 					self.channels[ch.channel].enabled = 0
 				if self.channels[ch.channel].enabled == 0 and self.getVoltagePreset(ch.channel)!=0:
 					self.setVoltage(ch.channel,0)
-				self.send_to_influx(self.name, ch.channel, 'actual', ch.voltage)
-				self.send_to_influx(self.name, ch.channel, 'current', ch.current)
 				time.sleep(0.1)
-
 	
 	#if the voltage of a channel is zero, it will be turned off when starting the GUI
 	def startCheck(self):
@@ -319,15 +311,6 @@ class Unit:
 		
 	def getCurrent(self,channel):
 		return self.mhv4.get_current(channel)
-
-	# Send rates to Influx database
-	def send_to_influx( self, name, channel,  meastype, value ):
-		try:
-			payload = 'hv,name=' + str(name) + ',channel=' + str(channel) + ',type=' + str(meastype) + ' value=' + str(value)
-			r = requests.post( 'https://dbod-iss.cern.ch:8080/write?db=hv', data=payload, auth=("admin","issmonitor"), verify=False )
-		except InsecureRequestWarning:
-			pass
-
 			
 class ChannelView(wx.StaticBox):
 	def __init__(self,parent,number):
@@ -554,13 +537,10 @@ class MHV4GUI(wx.Frame):
 
 def main():
 
-	# Disable warnings related to security certificate checks being bypassed	
-	urllib3.disable_warnings( urllib3.exceptions.InsecureRequestWarning )
-
 	mhv4units = []
-	mhv4units.append(Unit('0318132','RecoildE'))
-	mhv4units.append(Unit('0318131','RecoilE' ))
-	mhv4units.append(Unit('0318134','S1_dE-E'))
+	mhv4units.append(Unit('0318132','Recoil dE'))
+	mhv4units.append(Unit('0318131','Recoil E' ))
+	mhv4units.append(Unit('0318134','S1 & dE-E'))
 	#mhv4units.append(Unit('0318133','dE-E'))
 	
 	print('Looking up ports for the MHV4 units in (/dev/tty*) ...')
