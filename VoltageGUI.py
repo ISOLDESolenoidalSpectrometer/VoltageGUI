@@ -7,6 +7,7 @@
 
 import wx
 from mhv4lib import mhv4lib
+import n1419lib
 import time
 from serial.tools import list_ports
 import threading
@@ -15,11 +16,17 @@ import requests
 import urllib3
 
 
+# Mesytec specific options
 RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
 RAMP_WAIT_TIME = 2	# the time between to voltage steps
 VOLTAGE_LIMIT = 300	# maximal voltage which can be applied
 USING_NEW_FIRMWARE = True
 START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
+
+# CAEN specific options
+RAMP_RATE_CAEN = 1.0 # the default ramp rate on the CAEN N1419 modules
+
+# GUI options
 UPDATE_TIME=3		# the voltages and currents are updated in the GUI every 3 s
 
 #------------------------Defintion of events----------------------------------------------
@@ -115,12 +122,12 @@ class CheckAndUpdater(threading.Thread):
 				element=self._parent.Vqueue.root
 				while element!=None:
 					i=element.channel
-					cur=self._parent.channelViews[i].unit.mhv4unit.getVoltage(i) #get the current voltage of the channel
+					cur=self._parent.channelViews[i].unit.myunit.getVoltage(i) #get the current voltage of the channel
 					time.sleep(0.1) 
 					self._updateCounter=self._updateCounter+0.1
 					wan=self._parent.channelViews[i].wantedVoltage #get the wanted voltage
 					if cur==0:
-						print("Voltage of channel "+str(i)+" of unit "+self._parent.mhv4unit.name+" turned unexpectedly to zero!")
+						print("Voltage of channel "+str(i)+" of unit "+self._parent.myunit.name+" turned unexpectedly to zero!")
 						self._parent.channelViews[i].changeVol=False #Ramping will be stopped and the element removed from the queue
 						b=element.next
 						self._parent.Vqueue.remove(element)
@@ -136,10 +143,10 @@ class CheckAndUpdater(threading.Thread):
 							else:
 								element=element.next
 								if (wan - cur > 0) : Cvalue=cur+RAMP_VOLTAGE_STEP# going up	
-								else : Cvalue = cur-RAMP_VOLTAGE_STEP # coming down
+								else: Cvalue = cur-RAMP_VOLTAGE_STEP # coming down
 							evt = CountEvent(myEVT_COUNT, -1, Cvalue) #create the event that tells the GUI to update
 							wx.PostEvent(self._parent.channelViews[i], evt) 
-							cur=self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,Cvalue) #set the new voltage
+							cur=self._parent.channelViews[i].unit.myunit.setVoltage(i,Cvalue) #set the new voltage
 							time.sleep(0.1) 
 							self._updateCounter=self._updateCounter+0.1
 						else:
@@ -156,21 +163,22 @@ class CheckAndUpdater(threading.Thread):
 						evt1 = EnableChange(myEnableChange, -1, newvalue)
 						wx.PostEvent(self._parent.channelViews[i], evt1)
 						if 1 == newvalue :
-							self._parent.channelViews[i].unit.mhv4unit.enableChannel(i)
+							self._parent.channelViews[i].unit.myunit.enableChannel(i)
 							time.sleep(0.1) 
 							self._updateCounter=self._updateCounter+0.1
-							self._parent.channelViews[i].unit.mhv4unit.mhv4.set_voltage(i,START_VOLTAGE)
-							time.sleep(0.1) 
-							self._updateCounter=self._updateCounter+0.1
+							if self._parent.channelViews[i].unit.myunit.hvtype == 'mhv4':
+								self._parent.channelViews[i].unit.myunit.setVoltage(i,START_VOLTAGE)
+								time.sleep(0.1) 
+								self._updateCounter=self._updateCounter+0.1
 						if 0 == newvalue : 
-							self._parent.channelViews[i].unit.mhv4unit.disableChannel(i)
+							self._parent.channelViews[i].unit.myunit.disableChannel(i)
 							time.sleep(0.1) 
 							self._updateCounter=self._updateCounter+0.1
 					else: #a change in the polarity was requested
 						newpolarity=element.value
 						evt2 = PolarityChange(myPolarityChange, -1, 1)
 						wx.PostEvent(self._parent.channelViews[i], evt2)
-						self._parent.channelViews[i].unit.mhv4unit.setPolarity(i,newpolarity)
+						self._parent.channelViews[i].unit.myunit.setPolarity(i,newpolarity)
 						time.sleep(0.1) 
 						self._updateCounter=self._updateCounter+0.1
 						#self._parent.channelViews[i].changePol=False
@@ -183,29 +191,32 @@ class CheckAndUpdater(threading.Thread):
 			
 			if self._updateCounter>=UPDATE_TIME:
 				self._updateCounter=0
-				#print(self._parent.mhv4unit.name+"Check started")
+				#print(self._parent.myunit.name+"Check started")
 				for i in range(4):
-					self._parent.mhv4unit.updateValues(i)
+					self._parent.myunit.updateValues(i)
 					evt3 = Update(myUpdate, -1, 1)
 					wx.PostEvent(self._parent.channelViews[i], evt3)
 					time.sleep(0.1)
 					self._updateCounter=self._updateCounter+0.1
-				#print(self._parent.mhv4unit.name+"Check ended")
+				#print(self._parent.myunit.name+"Check ended")
 
 #------------------------------------------------------------------------------------------#
 
 class Channel:
 	def __init__(self, parent, number):
 		self.channel = number
+		self.setvoltage = 0.
 		self.voltage = 0.
 		self.current = 0.
 		self.polarity = 0
 		self.enabled = 0.
 
 class Unit:
-	def __init__(self, serial, name):
+	def __init__(self, serial, name, hvtype, board):
 		self.port = ''
-		self.mhv4 = None
+		self.hvunit = None
+		self.hvtype = hvtype # mhv4 or n1419
+		self.board = board # lbus in N1419, unused in MHV4
 		self.name = name
 		self.serial = serial
 		self.rampspeed = 0
@@ -214,46 +225,63 @@ class Unit:
 			self.channels.append(Channel(self,i))
 			
 	def connect(self):
-		self.mhv4 = mhv4lib.MHV4(self.port, baud=9600)
+		if self.hvtype == 'mhv4':
+			self.hvunit = mhv4lib.MHV4(self.port, baud=9600)
+		elif self.hvtype == 'n1419':
+			self.hvunit = n1419lib.N1419(self.port, baud=9600, board=self.board)
+		else:
+			print( "Invalid type {}".format(self.hvtype) )
 		
 	def disconnect(self):
-		self.mhv4.close()
+		self.hvunit.close()
 		
 	def updateValues(self, channel=4):
 		
-		if self.mhv4 is None: # FOR DEBUGGING
-			print("MHV4 unit %s not found?" % self.name)
+		if self.hvunit is None: # FOR DEBUGGING
+			print("HV unit {name} of type {hvtype} not found?".format( name=self.name, hvtype=self.hvtype ) )
 			return
 			
 		if channel < 4: # update values for only one channel in the unit
-			self.channels[channel].voltage = self.getVoltage(channel)
-			self.channels[channel].current = self.getCurrent(channel)
-			self.channels[channel].polarity=self.getPolarity(channel)
-			self.channels[channel].polarity=self.getPolarity(channel)
-			if self.channels[channel].enabled != 1:
-				if self.channels[channel].voltage > 0.1:
-					self.channels[channel].enabled = 1
-				if self.getVoltagePreset(channel)!=0:
-					self.setVoltage(channel,0)
-			elif self.channels[channel].voltage==0:
-				self.mhv4.set_off(channel)
-				self.channels[channel].enabled = 0
+			self.channels[channel].voltage  = self.getVoltage(channel)
+			self.channels[channel].current  = self.getCurrent(channel)
+			self.channels[channel].polarity = self.getPolarity(channel)
+			if self.hvtype == 'mhv4':
+				if self.channels[channel].enabled != 1: 
+					if self.channels[channel].voltage > 0.1:
+						self.channels[channel].enabled = 1
+					if self.getVoltagePreset(channel) != 0:
+						self.setVoltage(channel,0)
+						self.channels[channel].setvoltage = 0
+				elif self.channels[channel].voltage == 0:
+					self.hvunit.set_off(channel)
+					self.channels[channel].enabled = 0
+			if self.hvtype == 'n1419':
+				self.channels[channel].enabled = self.hvunit.get_power(channel)				
+				self.channels[channel].setvoltage = self.getVoltagePreset(channel)
+
 			self.send_to_influx(self.name, channel, 'actual', self.channels[channel].voltage)
 			self.send_to_influx(self.name, channel, 'current', self.channels[channel].current)
+			time.sleep(0.1)
 			
 			
-		else :	# update on all channels in the unit
+		else:	# update on all channels in the unit
 			for ch in self.channels:
-				self.channels[ch.channel].polarity=self.getPolarity(ch.channel)
-				ch.voltage = self.getVoltage(ch.channel)
-				ch.current = self.getCurrent(ch.channel)
-				if ch.voltage >= 0.1 :
-					self.channels[ch.channel].enabled = 1
-				elif self.channels[ch.channel].enabled == 1:
-					self.mhv4.set_off(ch.channel)
-					self.channels[ch.channel].enabled = 0
-				if self.channels[ch.channel].enabled == 0 and self.getVoltagePreset(ch.channel)!=0:
-					self.setVoltage(ch.channel,0)
+				ch.voltage    = self.getVoltage(ch.channel)
+				ch.current    = self.getCurrent(ch.channel)
+				ch.polarity   = self.getPolarity(ch.channel)
+				if self.hvtype == 'mhv4':
+					if ch.voltage >= 0.1:
+						ch.enabled = 1
+					elif ch.enabled == 1:
+						self.hvunit.set_off(ch.channel)
+						ch.enabled = 0
+					if ch.enabled == 0 and ch.setvoltage > 0:
+						self.setVoltage(ch.channel,0)
+						ch.setvoltage = self.getVoltagePreset(ch.channel)
+				if self.hvtype == 'n1419':
+					ch.enabled = self.hvunit.get_power(ch.channel)
+					ch.setvoltage = self.getVoltagePreset(ch.channel)
+
 				self.send_to_influx(self.name, ch.channel, 'actual', ch.voltage)
 				self.send_to_influx(self.name, ch.channel, 'current', ch.current)
 				time.sleep(0.1)
@@ -264,27 +292,40 @@ class Unit:
 		for ch in self.channels:
 			ch.voltage = self.getVoltage(ch.channel)
 			if ch.voltage == 0.0 :
-				self.mhv4.set_off(ch.channel)
+				self.hvunit.set_off(ch.channel)
 		
 	def enableChannel(self,channel):
-		if self.getVoltage(channel) > 0.1 : 
-			print("Unit %s channel %d is already ON ?" % (self.name, channel) )
-			return
-		self.mhv4.set_on(channel)
+		if self.hvtype == 'mhv4':
+			if self.getVoltage(channel) > 0.1:  
+				print("Unit %s channel %d is already ON ?" % (self.name, channel) )
+				return
+			else:
+				self.channels[channel].setvoltage = self.getVoltagePreset(channel)
+		elif self.hvtype == 'n1419':
+			if self.hvunit.get_power(channel) == 1:
+				print("Unit %s channel %d is already ON ?" % (self.name, channel) )
+				return
+		self.channels[channel].enabled = 1
+		self.hvunit.set_on(channel)
 	
 	def disableChannel(self,channel):
-		self.mhv4.set_off(channel)
+		self.channels[channel].enabled = 0
+		self.hvunit.set_off(channel)
 	
 	def setPolarity(self,channel,pol):
-		curvoltage = self.getVoltage(channel)
-		if curvoltage < 0.1:
-			self.mhv4.set_voltage_polarity(channel,pol)
-			self.channels[channel].polarity = int(pol)
+		if self.hvtype == 'n1419':
+			print("Polarity must be changed on the board")
+			return
 		else:
-			print("Channel " + str(channel) + " is ON. Turn it off first.")
+			curvoltage = self.getVoltage(channel)
+			if curvoltage < 0.1:
+				self.hvunit.set_voltage_polarity(channel,pol)	
+				self.channels[channel].polarity = int(pol)
+			else:
+				print("Channel " + str(channel) + " is ON. Turn it off first.")
 
 	def getPolarity(self, channel):
-		pol =  self.mhv4.get_polarity(channel)
+		pol =  self.hvunit.get_polarity(channel)
 		self.channels[channel].polarity = pol
 		return pol		
 	
@@ -292,33 +333,45 @@ class Unit:
 		if voltage > VOLTAGE_LIMIT: 
 			print("Set voltage too high (limit is " + str(VOLTAGE_LIMIT) + " V).")
 			return
+
+		if self.hvtype == 'n1419':
+			if int(RAMP_RATE_CAEN) < 1 or int(RAMP_RATE_CAEN) > 50:
+				print("Ramp rate must be between 1 V/s and 50 V/s. Currently = %s" % int(RAMP_RATE_CAEN) )
+				return
+			self.hvunit.set_ramp_up(channel,int(RAMP_RATE_CAEN))
+			self.hvunit.set_ramp_down(channel,int(RAMP_RATE_CAEN))
+			self.hvunit.set_voltage(channel, voltage)
+			time.sleep(0.1)
+			self.updateValues(channel)		
+
+		else: # go slowly for the MHV-4 modules
 		
-		# Ramp voltage slowly up or down
-		curvoltage = self.getVoltage(channel)	
-		curvoltage = self.channels[channel].voltage		
-		while abs(voltage - curvoltage) > RAMP_VOLTAGE_STEP:
-			newvoltage = curvoltage
-			if (voltage - curvoltage > 0) : newvoltage = int(curvoltage)+RAMP_VOLTAGE_STEP # going up
-			else : newvoltage = int(curvoltage)-RAMP_VOLTAGE_STEP # coming down
-			self.mhv4.set_voltage(channel, newvoltage)
-			time.sleep(RAMP_WAIT_TIME) # wait time before taking the next voltage step
-			curvoltage = self.getVoltage(channel)
+			# Ramp voltage slowly up or down
+			curvoltage = self.getVoltage(channel)	
 			curvoltage = self.channels[channel].voltage
-			self.updateValues(channel)
+			while abs(voltage - curvoltage) > RAMP_VOLTAGE_STEP:
+				newvoltage = curvoltage
+				if (voltage - curvoltage > 0) : newvoltage = int(curvoltage)+RAMP_VOLTAGE_STEP # going up
+				else: newvoltage = int(curvoltage)-RAMP_VOLTAGE_STEP # coming down
+				self.hvunit.set_voltage(channel, newvoltage)
+				time.sleep(RAMP_WAIT_TIME) # wait time before taking the next voltage step
+				curvoltage = self.getVoltage(channel)
+				curvoltage = self.channels[channel].voltage
+				self.updateValues(channel)
 		
-		# Finally after ramping, set the final requested value
-		self.mhv4.set_voltage(channel, voltage)
-		time.sleep(RAMP_WAIT_TIME)
-		self.updateValues(channel)		
+			# Finally after ramping, set the final requested value
+			self.hvunit.set_voltage(channel, voltage)
+			time.sleep(RAMP_WAIT_TIME)
+			self.updateValues(channel)		
 
 	def getVoltage(self,channel):
-		return abs(self.mhv4.get_voltage(channel))
+		return abs(self.hvunit.get_voltage(channel))
 		
-	def getVoltagePreset(self,channel): # Not in old firmware !
-		return self.mhv4.get_voltage_preset(channel)
+	def getVoltagePreset(self,channel): # Not in old MHV-4 firmware !
+		return self.hvunit.get_voltage_preset(channel)
 		
 	def getCurrent(self,channel):
-		return self.mhv4.get_current(channel)
+		return self.hvunit.get_current(channel)
 
 	# Send rates to Influx database
 	def send_to_influx( self, name, channel,  meastype, value ):
@@ -331,7 +384,7 @@ class Unit:
 			
 class ChannelView(wx.StaticBox):
 	def __init__(self,parent,number):
-		wx.StaticBox.__init__(self, parent,number,"HV"+str(number),size=(220,160))
+		wx.StaticBox.__init__(self, parent,number,"HV"+str(number),size=(220,210))
 		self.number = number
 		self.unit = parent
 
@@ -348,8 +401,10 @@ class ChannelView(wx.StaticBox):
 
 		#self.voltageBox1 = wx.StaticBox(self, -1, "HV"+str(number), size=(220,180))
 		self.bsizer1 = wx.GridBagSizer()
+		self.presetLabel  = wx.StaticText(self, -1, "Set Value (V):")
 		self.voltageLabel = wx.StaticText(self, -1, "Voltage (V):")
 		self.currentLabel = wx.StaticText(self, -1, "Current (uA):")
+		self.presetValue  = wx.TextCtrl(self, -1, "0.0", size=(100, -1), style=wx.ALIGN_RIGHT|wx.TE_READONLY)
 		self.voltageValue = wx.TextCtrl(self, -1, "0.0", size=(100, -1), style=wx.ALIGN_RIGHT|wx.TE_READONLY)
 		self.currentValue = wx.TextCtrl(self, -1, "0.0", size=(100, -1), style=wx.ALIGN_RIGHT|wx.TE_READONLY)
 		self.setVoltageValue = wx.TextCtrl(self, -1, "0", size=(100, -1), style=wx.ALIGN_RIGHT)
@@ -374,45 +429,54 @@ class ChannelView(wx.StaticBox):
 		self.enablerb.SetToolTip(wx.ToolTip("Set channel ON or OFF"))		
 		self.Bind(wx.EVT_RADIOBOX, self.EvtEnableRadioBox, self.enablerb)
 		
-		self.bsizer1.Add(self.voltageLabel, (0,1), flag=wx.EXPAND )
-		self.bsizer1.Add(self.voltageValue, (0,2), flag=wx.EXPAND )
-		self.bsizer1.Add(self.currentLabel, (1,1), flag=wx.EXPAND )
-		self.bsizer1.Add(self.currentValue, (1,2), flag=wx.EXPAND )
-		self.bsizer1.Add(self.setVoltageValue, (2,1), flag=wx.EXPAND )
-		self.bsizer1.Add(self.setVoltageButton, (2,2), flag=wx.EXPAND )
-		self.bsizer1.Add(self.polrb, (3,1), flag=wx.EXPAND )
-		self.bsizer1.Add(self.enablerb, (3,2), flag=wx.EXPAND )
+		self.bsizer1.Add(self.presetLabel,  (0,1), flag=wx.EXPAND )
+		self.bsizer1.Add(self.presetValue,  (0,2), flag=wx.EXPAND )
+		self.bsizer1.Add(self.voltageLabel, (1,1), flag=wx.EXPAND )
+		self.bsizer1.Add(self.voltageValue, (1,2), flag=wx.EXPAND )
+		self.bsizer1.Add(self.currentLabel, (2,1), flag=wx.EXPAND )
+		self.bsizer1.Add(self.currentValue, (2,2), flag=wx.EXPAND )
+		self.bsizer1.Add(self.setVoltageValue, (3,1), flag=wx.EXPAND )
+		self.bsizer1.Add(self.setVoltageButton, (3,2), flag=wx.EXPAND )
+		self.bsizer1.Add(self.polrb, (4,1), flag=wx.EXPAND )
+		self.bsizer1.Add(self.enablerb, (4,2), flag=wx.EXPAND )
 		
 		self.SetSizer(self.bsizer1)
 		
-		self.unit.mhv4unit.updateValues() # Get initial values from the unit
-		self.wantedVoltage=self.unit.mhv4unit.channels[self.number].voltage	
+		self.unit.myunit.updateValues() # Get initial values from the unit
+		self.wantedVoltage=self.unit.myunit.channels[self.number].voltage	
 		self.updateValues()               # Update GUI with the initial values
 		
 	def updateValues(self):
-		curvoltage = self.unit.mhv4unit.channels[self.number].voltage
-		curcurrent = self.unit.mhv4unit.channels[self.number].current
-		curpolarity = self.unit.mhv4unit.channels[self.number].polarity
-		curenable = self.unit.mhv4unit.channels[self.number].enabled
+		setvoltage = self.unit.myunit.channels[self.number].setvoltage
+		curvoltage = self.unit.myunit.channels[self.number].voltage
+		curcurrent = self.unit.myunit.channels[self.number].current
+		curpolarity = self.unit.myunit.channels[self.number].polarity
+		curenable = self.unit.myunit.channels[self.number].enabled
 		curpolaritysel = 1 if (curpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
 		curenablesel   = 1 if (curenable == 0)   else 0 # invert the selection that comes from the RadioBox !
-		if curenable == 1 : 
-			self.enablerb.SetForegroundColour('#ff0000')
+		if curenable == 1: 
 			self.polrb.Enable(False)
+			self.enablerb.SetForegroundColour('#ff0000')
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			self.polrb.Enable(True)
-		
+			if self.unit.myunit.hvtype == 'mhv4':
+				self.polrb.Enable(True)
+			else:
+				self.polrb.Enable(False)
+	
+	
+		self.presetValue.SetValue(str(setvoltage))
 		self.voltageValue.SetValue(str(curvoltage))
 		self.currentValue.SetValue(str(curcurrent))
 		self.polrb.SetSelection(curpolaritysel)
 		self.enablerb.SetSelection(curenablesel)
 
 	def updateValuesEvent(self,evt3):
-		curvoltage = self.unit.mhv4unit.channels[self.number].voltage
-		curcurrent = self.unit.mhv4unit.channels[self.number].current
-		curpolarity = self.unit.mhv4unit.channels[self.number].polarity
-		curenable = self.unit.mhv4unit.channels[self.number].enabled
+		setvoltage = self.unit.myunit.channels[self.number].setvoltage
+		curvoltage = self.unit.myunit.channels[self.number].voltage
+		curcurrent = self.unit.myunit.channels[self.number].current
+		curpolarity = self.unit.myunit.channels[self.number].polarity
+		curenable = self.unit.myunit.channels[self.number].enabled
 		curpolaritysel = 1 if (curpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
 		curenablesel   = 1 if (curenable == 0)   else 0 # invert the selection that comes from the RadioBox !
 		if curenable == 1 : 
@@ -420,8 +484,12 @@ class ChannelView(wx.StaticBox):
 			self.polrb.Enable(False)
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			self.polrb.Enable(True)
+			if self.unit.myunit.hvtype == 'mhv4':
+				self.polrb.Enable(True)
+			else:
+				self.polrb.Enable(False)
 		
+		self.presetValue.SetValue(str(setvoltage))
 		self.voltageValue.SetValue(str(curvoltage))
 		self.currentValue.SetValue(str(curcurrent))
 		self.polrb.SetSelection(curpolaritysel)
@@ -429,40 +497,56 @@ class ChannelView(wx.StaticBox):
 		
 	def OnClickSetVoltageButton(self, event):
 		newvoltage = float( self.setVoltageValue.GetValue() )
-		if self.unit.mhv4unit.channels[self.number].enabled==0:
-			print("Channel %d of unit %s is turned OFF, turn it ON first" % (self.number,self.unit.mhv4unit.name) )
-			return
-		
 		if newvoltage > VOLTAGE_LIMIT: 
 			print("Set voltage too high (limit is " + str(VOLTAGE_LIMIT) + " V).")
 			return
-		print("Set voltage of unit %s channel %d to %.2f" % (self.unit.mhv4unit.name, self.number, newvoltage) )
-		self.wantedVoltage=newvoltage
-		if self.changeVol==False: #if the channel is not already in the voltage change queue, an element representing the channel is put in the queue
-			self.changeVol=True
-			self.unit.Vqueue.add(queues.Element(self.number))
+
+		if self.unit.myunit.hvtype == 'mhv4':
+			if self.unit.myunit.channels[self.number].enabled==0:
+				print("Channel %d of unit %s is turned OFF, turn it ON first" % (self.number,self.unit.myunit.name) )
+				return			
+		
+			print("Set voltage of unit %s channel %d to %.2f" % (self.unit.myunit.name, self.number, newvoltage) )
+			self.wantedVoltage=newvoltage
+			self.presetValue.SetValue(str(newvoltage))
+			self.unit.myunit.channels[self.number].setvoltage = self.wantedVoltage		
+			if self.changeVol==False: #if the channel is not already in the voltage change queue, an element representing the channel is put in the queue
+				self.changeVol=True
+				self.unit.Vqueue.add(queues.Element(self.number))
+
+		else: # caen n1419 auto-ramps at 1 V/s
+			self.presetValue.SetValue(str(newvoltage))
+			self.unit.myunit.setVoltage(self.number,float(newvoltage))
+		
 
 	def voltageChange(self,evt):
 		newvoltage=evt.GetValue()
-		self.unit.mhv4unit.channels[self.number].voltage = newvoltage
+		self.unit.myunit.channels[self.number].voltage = newvoltage
 		self.voltageValue.SetValue(str(newvoltage))
 		
 		
 	def EvtPolarityRadioBox(self, event):
-		if self.unit.mhv4unit.channels[self.number].enabled == 1 or self.unit.mhv4unit.channels[self.number].voltage > 0.1 :
-			print("Unit %s Channel %d is ON. Turn it off first." % (self.unit.mhv4unit.name, self.number) )
-			return
+		if self.unit.myunit.hvtype == 'mhv4':	# mesytec process
+			if self.unit.myunit.channels[self.number].enabled == 1 or self.unit.myunit.channels[self.number].voltage > 0.1 :
+				print("Unit %s Channel %d is ON. Turn it off first." % (self.unit.myunit.name, self.number) )
+				return
 		
-		selection = self.polrb.GetSelection()
-		newpolarity = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
-		print("Set polarity of unit %s channel %d to %d" % (self.unit.mhv4unit.name, self.number, newpolarity) )
+			selection = self.polrb.GetSelection()
+			newpolarity = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
+			print("Set polarity of unit %s channel %d to %d" % (self.unit.myunit.name, self.number, newpolarity) )
 			
-		curpolaritysel = 1 if (newpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
-		self.polrb.SetSelection(curpolaritysel)		
-		self.unit.Pqueue.add(queues.Element2(self.number,0,newpolarity))
+			curpolaritysel = 1 if (newpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
+			self.polrb.SetSelection(curpolaritysel)		
+			self.unit.Pqueue.add(queues.Element2(self.number,0,newpolarity))
 		
+		else:	# caen process
+			print("Cannot change polarity of the N1419 modules in software")
+			self.polrb.Enable(False)
+			
+
 
 	def polarityChanger(self,evt1):
+		
 		newpolarity=evt1.GetValue()
 		curpolaritysel = 1 if (newpolarity == 0) else 0	# invert the selection that comes from the RadioBox !
 		self.polrb.SetSelection(curpolaritysel)
@@ -470,24 +554,39 @@ class ChannelView(wx.StaticBox):
 		
 	def EvtEnableRadioBox(self, event):
 		selection = self.enablerb.GetSelection()
-		if selection==1 and self.unit.mhv4unit.channels[self.number].voltage>0:
-			self.wantedVoltage=0 #instead of turning the channel directly off an element is put in the voltage change queue changing the voltage to zero
-			if self.changeVol==False:
-				self.changeVol=True
-				print("Set voltage of unit %s channel %d to %.2f" % (self.unit.mhv4unit.name, self.number, 0) )
-				self.unit.Vqueue.add(queues.Element(self.number))
+
+		if self.unit.myunit.hvtype == 'mhv4':	# mesytec process		
+			if selection==1 and self.unit.myunit.channels[self.number].voltage>0:
+				self.wantedVoltage=0 #instead of turning the channel directly off an element is put in the voltage change queue changing the voltage to zero
+				if self.changeVol==False:
+					self.changeVol=True
+					print("Set voltage of unit %s channel %d to %.2f" % (self.unit.myunit.name, self.number, 0) )
+					self.unit.Vqueue.add(queues.Element(self.number))
 			
-		else:
+			else:
+				newvalue = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
+				print("Set enable of unit %s channel %d to %d" % (self.unit.myunit.name, self.number, newvalue) )
+				self.unit.myunit.channels[self.number].enabled = newvalue
+				self.unit.Pqueue.add(queues.Element2(self.number,1,newvalue))
+
+		else:	# caen process
 			newvalue = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
-			print("Set enable of unit %s channel %d to %d" % (self.unit.mhv4unit.name, self.number, newvalue) )
-			self.unit.mhv4unit.channels[self.number].enabled = newvalue
+			time.sleep(0.1)
+			print("Set enable of unit %s channel %d to %d" % (self.unit.myunit.name, self.number, newvalue) )
+			self.unit.myunit.channels[self.number].enabled = newvalue
 			self.unit.Pqueue.add(queues.Element2(self.number,1,newvalue))
+			#if newvalue == 1:
+			#	self.unit.myunit.enableChannel(self.number)
+			#	self.enablerb.SetForegroundColour('#ff0000')
+			#else:
+			#	self.unit.myunit.disableChannel(self.number)
+			#	self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
 
 	def EnDisabler(self, evt2):
 		newvalue=evt2.GetValue()
-		if 1 == newvalue :
-			self.voltageValue.SetValue(str(START_VOLTAGE))			
-		self.unit.mhv4unit.channels[self.number].enabled = newvalue
+		if 1 == newvalue and self.unit.myunit.hvtype == 'mhv4':
+			self.presetValue.SetValue(str(START_VOLTAGE))			
+		self.unit.myunit.channels[self.number].enabled = newvalue
 		self.EnDisable=False
 		selection = 1 if (newvalue == 0) else 0 
 		self.enablerb.SetSelection(selection)
@@ -496,20 +595,29 @@ class ChannelView(wx.StaticBox):
 			self.polrb.Enable(False)
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			self.polrb.Enable(True)
+			if self.unit.myunit.hvtype == 'mhv4':
+				self.polrb.Enable(True)
+			else:
+				self.polrb.Enable(False)
+				
 
 class UnitView(wx.Panel):	
 	"""
 	Class that displays all of the channels of one unit in one wx.Panel
 	"""
    
-	def __init__(self,parent, mhv4unit):
+	def __init__(self,parent, myunit):
 		wx.Panel.__init__(self, parent, size=(250,-1))
-		self.mhv4unit = mhv4unit
+		self.myunit = myunit
 		
-		#self.SetBackgroundColour('#ededed') # Normal gray
-		self.SetBackgroundColour('#f0f000') # Mesytec yellow
-		self.unitNameLabel = wx.StaticText(self, label=self.mhv4unit.name)
+		if self.myunit.hvtype == 'mhv4':
+			self.SetBackgroundColour('#f0f000') # Mesytec yellow
+		elif self.myunit.hvtype == 'n1419':
+			self.SetBackgroundColour('#bd0016') # CAEN red
+		else:
+			self.SetBackgroundColour('#ededed') # Normal gray
+
+		self.unitNameLabel = wx.StaticText(self, label=self.myunit.name)
 		self.mhvPanSizer = wx.GridBagSizer()		
 		self.mhvPanSizer.Add(self.unitNameLabel, (0, 0), span=(0,2), flag=wx.ALIGN_CENTER)
 		
@@ -529,13 +637,13 @@ class UnitView(wx.Panel):
 		self.updater.start()
 	
 
-class MHV4GUI(wx.Frame):
+class HVGUI(wx.Frame):
 
-	def __init__(self, parent, mytitle, mymhv4units):
+	def __init__(self, parent, mytitle, myunits):
 	
-		self.mhv4units = mymhv4units
-		width = 270+270*(abs(len(mymhv4units)-1))
-		super(MHV4GUI, self).__init__(parent, title=mytitle,size=(width,740))
+		self.myunits = myunits
+		width = 270+270*(abs(len(myunits)-1))
+		super(HVGUI, self).__init__(parent, title=mytitle,size=(width,940))
 
 		self.InitUI()
 		self.Centre()
@@ -546,8 +654,8 @@ class MHV4GUI(wx.Frame):
 		panel.SetBackgroundColour('#4f5049')
 		vbox = wx.BoxSizer(wx.HORIZONTAL)
 		
-		for unit in self.mhv4units: # Create a view for each MHV4 unit
-			vbox.Add(UnitView(panel, unit), wx.ID_ANY, wx.EXPAND | wx.ALL, 5)
+		for myunit in self.myunits: # Create a view for each HV unit
+			vbox.Add(UnitView(panel, myunit), wx.ID_ANY, wx.EXPAND | wx.ALL, 5)
 
 		panel.SetSizer(vbox)
 
@@ -557,41 +665,57 @@ def main():
 	# Disable warnings related to security certificate checks being bypassed	
 	urllib3.disable_warnings( urllib3.exceptions.InsecureRequestWarning )
 
-	mhv4units = []
-	mhv4units.append(Unit('0318132','RecoildE'))
-	mhv4units.append(Unit('0318131','RecoilE' ))
-	mhv4units.append(Unit('0318134','S1_dE-E'))
-	#mhv4units.append(Unit('0318133','dE-E'))
+	hvunits = []
+	hvunits.append(Unit(serial='0318132',name='RecoildE',hvtype='mhv4',board=0))
+	hvunits.append(Unit(serial='0318131',name='RecoilE',hvtype='mhv4',board=0))
+	hvunits.append(Unit(serial='0318134',name='S1_dE-E',hvtype='mhv4',board=0))
+	#hvunits.append(Unit(serial='0318133',name='dE-E',hvtype='mhv4',board=0))
+	hvunits.append(Unit(serial='1124',name='ArrayHV0',hvtype='n1419',board=0))
+	hvunits.append(Unit(serial='1115',name='ArrayHV1',hvtype='n1419',board=1))
+
+
 	
-	print('Looking up ports for the MHV4 units in (/dev/tty*) ...')
+	print('Looking up ports for the HV units in (/dev/tty*) ...')
 	ports = list_ports.comports()
-	print(ports[0].serial_number)
-	print(ports[1].serial_number)
-	foundmhv4units = []
-	for unit in mhv4units:
+	foundhvunits = []
+	for unit in hvunits:
 		for port in ports:
-			if port.serial_number == unit.serial:
+
+			# MHV-4 units have serial number in USB interface
+			if port.serial_number == unit.serial and unit.hvtype == 'mhv4': 
 				unit.port = port.device
 				print("Found MHV-4 unit (" + str(unit.serial) + "," + str(unit.name) + ") in port: " + str(unit.port) )
 				break
+
+			# N1419 units have no serial number in USB, need to connect first
+			elif port.serial_number == None and port.manufacturer == 'FTDI' and unit.hvtype == 'n1419':
+				tmpmod = n1419lib.N1419(port=port.device, baud=9600, board=unit.board)
+				if unit.serial == tmpmod.get_serial_number():
+					unit.port = port.device
+					print("Found N1419 unit (" + str(unit.serial) + "," + str(unit.name) + ") in port: " + str(unit.port) )
+					tmpmod.close()
+					break
+				tmpmod.close()
+
+
 		if unit.port == '':
-			print("MHV-4 unit (" + str(unit.serial) + "," + str(unit.name) + ") was not found.")	
-			#foundmhv4units.append(unit) # UNCOMMENT HERE TO DEBUG AND TEST WITH 'DUMMY' UNITS
-		else :
-			foundmhv4units.append(unit)
+			print(str(unit.hvtype) + " unit (" + str(unit.serial) + "," + str(unit.name) + ") was not found.")	
+			#foundhvunits.append(unit) # UNCOMMENT HERE TO DEBUG AND TEST WITH 'DUMMY' UNITS
+		else:
+			foundhvunits.append(unit)
 			unit.connect()
 			unit.startCheck()
 			unit.updateValues()
 
-			#unit.mhv4unit.updateValues()
+			#unit.myunit.updateValues()
 	
-	if ( 0 == len(foundmhv4units) ) :
-		print('No MHV-4 units found in any of the USB ports with the given serial numbers!')
+	if ( 0 == len(foundhvunits) ) :
+		print('No HV units found in any of the USB ports with the given serial numbers!')
 		print('Exiting....')
 		exit()
 		
 	app = wx.App()
-	gui = MHV4GUI(None, 'MHV4GUI', foundmhv4units)
+	gui = HVGUI(None, 'HVGUI', foundhvunits)
 	gui.Show()
 	app.MainLoop()
 
