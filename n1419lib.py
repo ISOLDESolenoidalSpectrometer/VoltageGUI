@@ -455,7 +455,7 @@ class N1419():
 		:param t: The desired trip time in seconds minimum = 0 s, maximum = 1000 s
 		"""
 
-		if float(n) < 0.0 or float(n) > 1000.0: return
+		if float(t) < 0.0 or float(t) > 1000.0: return
 
 		response = self.send_command( '$BD:{bd},CMD:SET,CH:{ch},PAR:TRIP,VAL:{val}\r'.format(bd=self.board,ch=channel,val=t) )
 		return response.decode('utf8')
