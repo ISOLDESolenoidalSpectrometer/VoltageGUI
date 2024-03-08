@@ -4,30 +4,27 @@
 # Example GUI in wxPython to control multiple Mesytec MHV-4 units
 # connected to USB ports.
 # Joonas Konki - 04/06/2018
-# Updated by Edith Baader and Liam Gaffney
 
 import wx
 from mhv4lib import mhv4lib
 import n1419lib
-import nhrlib
 import time
 from serial.tools import list_ports
 import threading
 import queues #File with definition of queue and queue elements
 import requests
 import urllib3
-import numpy as np
 
 
 # Mesytec specific options
 RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
 RAMP_WAIT_TIME = 2	# the time between to voltage steps
-VOLTAGE_LIMIT = 350	# maximal voltage which can be applied
+VOLTAGE_LIMIT = 300	# maximal voltage which can be applied
 USING_NEW_FIRMWARE = True
 START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
 
 # CAEN specific options
-RAMP_RATE_CAEN = 1 # the default ramp rate on the CAEN N1419 modules
+RAMP_RATE_CAEN = 1.0 # the default ramp rate on the CAEN N1419 modules
 
 # GUI options
 UPDATE_TIME=3		# the voltages and currents are updated in the GUI every 3 s
@@ -218,8 +215,8 @@ class Unit:
 	def __init__(self, serial, name, hvtype, board):
 		self.port = ''
 		self.hvunit = None
-		self.hvtype = hvtype # mhv4, n1419 or nhr
-		self.board = board # lbus in N1419, unused in MHV4 and NHR
+		self.hvtype = hvtype # mhv4 or n1419
+		self.board = board # lbus in N1419, unused in MHV4
 		self.name = name
 		self.serial = serial
 		self.rampspeed = 0
@@ -232,8 +229,6 @@ class Unit:
 			self.hvunit = mhv4lib.MHV4(self.port, baud=9600)
 		elif self.hvtype == 'n1419':
 			self.hvunit = n1419lib.N1419(self.port, baud=9600, board=self.board)
-		elif self.hvtype == 'nhr':
-			self.hvunit = nhrlib.NHR(self.port, baud=9600, board=self.board)
 		else:
 			print( "Invalid type {}".format(self.hvtype) )
 		
@@ -260,8 +255,8 @@ class Unit:
 				elif self.channels[channel].voltage == 0:
 					self.hvunit.set_off(channel)
 					self.channels[channel].enabled = 0
-			else:
-				self.channels[channel].enabled = self.hvunit.get_power(channel)
+			if self.hvtype == 'n1419':
+				self.channels[channel].enabled = self.hvunit.get_power(channel)				
 				self.channels[channel].setvoltage = self.getVoltagePreset(channel)
 
 			self.send_to_influx(self.name, channel, 'actual', self.channels[channel].voltage)
@@ -283,7 +278,7 @@ class Unit:
 					if ch.enabled == 0 and ch.setvoltage > 0:
 						self.setVoltage(ch.channel,0)
 						ch.setvoltage = self.getVoltagePreset(ch.channel)
-				else:
+				if self.hvtype == 'n1419':
 					ch.enabled = self.hvunit.get_power(ch.channel)
 					ch.setvoltage = self.getVoltagePreset(ch.channel)
 
@@ -306,26 +301,21 @@ class Unit:
 				return
 			else:
 				self.channels[channel].setvoltage = self.getVoltagePreset(channel)
-		else:
+		elif self.hvtype == 'n1419':
 			if self.hvunit.get_power(channel) == 1:
 				print("Unit %s channel %d is already ON ?" % (self.name, channel) )
 				return
 		self.channels[channel].enabled = 1
 		self.hvunit.set_on(channel)
-		time.sleep(0.8)
 	
 	def disableChannel(self,channel):
 		self.channels[channel].enabled = 0
 		self.hvunit.set_off(channel)
-		time.sleep(0.8)
 	
 	def setPolarity(self,channel,pol):
 		if self.hvtype == 'n1419':
 			print("Polarity must be changed on the board")
 			return
-		elif self.hvtype == 'nhr':
-			self.hvunit.set_voltage_polarity(channel,pol)	
-			self.channels[channel].polarity = int(pol)
 		else:
 			curvoltage = self.getVoltage(channel)
 			if curvoltage < 0.1:
@@ -344,7 +334,7 @@ class Unit:
 			print("Set voltage too high (limit is " + str(VOLTAGE_LIMIT) + " V).")
 			return
 
-		if self.hvtype == 'n1419' or self.hvtype == 'nhr':
+		if self.hvtype == 'n1419':
 			if int(RAMP_RATE_CAEN) < 1 or int(RAMP_RATE_CAEN) > 50:
 				print("Ramp rate must be between 1 V/s and 50 V/s. Currently = %s" % int(RAMP_RATE_CAEN) )
 				return
@@ -469,7 +459,7 @@ class ChannelView(wx.StaticBox):
 			self.enablerb.SetForegroundColour('#ff0000')
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			if self.unit.myunit.hvtype == 'mhv4' or self.unit.myunit.hvtype == 'nhr':
+			if self.unit.myunit.hvtype == 'mhv4':
 				self.polrb.Enable(True)
 			else:
 				self.polrb.Enable(False)
@@ -494,7 +484,7 @@ class ChannelView(wx.StaticBox):
 			self.polrb.Enable(False)
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			if self.unit.myunit.hvtype == 'mhv4' or self.unit.myunit.hvtype == 'nhr':
+			if self.unit.myunit.hvtype == 'mhv4':
 				self.polrb.Enable(True)
 			else:
 				self.polrb.Enable(False)
@@ -524,7 +514,7 @@ class ChannelView(wx.StaticBox):
 				self.changeVol=True
 				self.unit.Vqueue.add(queues.Element(self.number))
 
-		else: # caen n1419 and iSeg NHR auto-ramps at 1 V/s
+		else: # caen n1419 auto-ramps at 1 V/s
 			self.presetValue.SetValue(str(newvoltage))
 			self.unit.myunit.setVoltage(self.number,float(newvoltage))
 		
@@ -536,7 +526,7 @@ class ChannelView(wx.StaticBox):
 		
 		
 	def EvtPolarityRadioBox(self, event):
-		if self.unit.myunit.hvtype == 'mhv4' or self.unit.myunit.hvtype == 'nhr':	# normal process
+		if self.unit.myunit.hvtype == 'mhv4':	# mesytec process
 			if self.unit.myunit.channels[self.number].enabled == 1 or self.unit.myunit.channels[self.number].voltage > 0.1 :
 				print("Unit %s Channel %d is ON. Turn it off first." % (self.unit.myunit.name, self.number) )
 				return
@@ -579,7 +569,7 @@ class ChannelView(wx.StaticBox):
 				self.unit.myunit.channels[self.number].enabled = newvalue
 				self.unit.Pqueue.add(queues.Element2(self.number,1,newvalue))
 
-		else:	# caen and iSeg process
+		else:	# caen process
 			newvalue = 1 if (selection == 0) else 0 # invert the selection that comes from the RadioBox !
 			time.sleep(0.1)
 			print("Set enable of unit %s channel %d to %d" % (self.unit.myunit.name, self.number, newvalue) )
@@ -605,7 +595,7 @@ class ChannelView(wx.StaticBox):
 			self.polrb.Enable(False)
 		else: 
 			self.enablerb.SetForegroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOWTEXT))
-			if self.unit.myunit.hvtype == 'mhv4' or self.unit.myunit.hvtype == 'nhr':
+			if self.unit.myunit.hvtype == 'mhv4':
 				self.polrb.Enable(True)
 			else:
 				self.polrb.Enable(False)
@@ -624,8 +614,6 @@ class UnitView(wx.Panel):
 			self.SetBackgroundColour('#f0f000') # Mesytec yellow
 		elif self.myunit.hvtype == 'n1419':
 			self.SetBackgroundColour('#bd0016') # CAEN red
-		elif self.myunit.hvtype == 'nhr':
-			self.SetBackgroundColour('#f8f7f2') # iSeg gray
 		else:
 			self.SetBackgroundColour('#ededed') # Normal gray
 
@@ -678,15 +666,12 @@ def main():
 	urllib3.disable_warnings( urllib3.exceptions.InsecureRequestWarning )
 
 	hvunits = []
-	hvunits.append(Unit(serial='1124',name='ArrayHV0',hvtype='n1419',board=0))
-	hvunits.append(Unit(serial='1115',name='ArrayHV1',hvtype='n1419',board=1))
-	#hvunits.append(Unit(serial='0318132',name='IonChamber',hvtype='mhv4',board=0))
 	hvunits.append(Unit(serial='0318132',name='RecoildE',hvtype='mhv4',board=0))
 	hvunits.append(Unit(serial='0318131',name='RecoilE',hvtype='mhv4',board=0))
-	hvunits.append(Unit(serial='0318134',name='Ancillaries',hvtype='mhv4',board=0))
-	#hvunits.append(Unit(serial='18149',name='IonChamber',hvtype='n1419',board=0))
+	hvunits.append(Unit(serial='0318134',name='S1_dE-E',hvtype='mhv4',board=0))
 	#hvunits.append(Unit(serial='0318133',name='dE-E',hvtype='mhv4',board=0))
-	#hvunits.append(Unit(serial='AH079MZQ',name='IonChamber',hvtype='nhr',board=0))
+	hvunits.append(Unit(serial='1124',name='ArrayHV0',hvtype='n1419',board=0))
+	hvunits.append(Unit(serial='1115',name='ArrayHV1',hvtype='n1419',board=1))
 
 
 	
@@ -702,14 +687,8 @@ def main():
 				print("Found MHV-4 unit (" + str(unit.serial) + "," + str(unit.name) + ") in port: " + str(unit.port) )
 				break
 
-			# NHR units have serial number in USB interface
-			elif port.serial_number == unit.serial and unit.hvtype == 'nhr': 
-				unit.port = port.device
-				print("Found NHR unit (" + str(unit.serial) + "," + str(unit.name) + ") in port: " + str(unit.port) )
-				break
-
 			# N1419 units have no serial number in USB, need to connect first
-			elif port.serial_number == None and ( port.manufacturer == 'FTDI' or port.manufacturer == 'CAEN SPA' ) and unit.hvtype == 'n1419':
+			elif port.serial_number == None and port.manufacturer == 'FTDI' and unit.hvtype == 'n1419':
 				tmpmod = n1419lib.N1419(port=port.device, baud=9600, board=unit.board)
 				if unit.serial == tmpmod.get_serial_number():
 					unit.port = port.device
@@ -734,7 +713,7 @@ def main():
 		print('No HV units found in any of the USB ports with the given serial numbers!')
 		print('Exiting....')
 		exit()
-
+		
 	app = wx.App()
 	gui = HVGUI(None, 'HVGUI', foundhvunits)
 	gui.Show()
@@ -743,3 +722,4 @@ def main():
 
 if __name__ == '__main__':
 	main()
+	

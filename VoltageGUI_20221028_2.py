@@ -27,7 +27,7 @@ USING_NEW_FIRMWARE = True
 START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
 
 # CAEN specific options
-RAMP_RATE_CAEN = 1 # the default ramp rate on the CAEN N1419 modules
+RAMP_RATE_CAEN = 1.0 # the default ramp rate on the CAEN N1419 modules
 
 # GUI options
 UPDATE_TIME=3		# the voltages and currents are updated in the GUI every 3 s
@@ -680,10 +680,10 @@ def main():
 	hvunits = []
 	hvunits.append(Unit(serial='1124',name='ArrayHV0',hvtype='n1419',board=0))
 	hvunits.append(Unit(serial='1115',name='ArrayHV1',hvtype='n1419',board=1))
-	#hvunits.append(Unit(serial='0318132',name='IonChamber',hvtype='mhv4',board=0))
-	hvunits.append(Unit(serial='0318132',name='RecoildE',hvtype='mhv4',board=0))
-	hvunits.append(Unit(serial='0318131',name='RecoilE',hvtype='mhv4',board=0))
-	hvunits.append(Unit(serial='0318134',name='Ancillaries',hvtype='mhv4',board=0))
+	hvunits.append(Unit(serial='0318132',name='IonChamber',hvtype='mhv4',board=0))
+	#hvunits.append(Unit(serial='0318132',name='RecoildE',hvtype='mhv4',board=0))
+	#hvunits.append(Unit(serial='0318131',name='RecoilE',hvtype='mhv4',board=0))
+	hvunits.append(Unit(serial='0318134',name='S1_dE-E',hvtype='mhv4',board=0))
 	#hvunits.append(Unit(serial='18149',name='IonChamber',hvtype='n1419',board=0))
 	#hvunits.append(Unit(serial='0318133',name='dE-E',hvtype='mhv4',board=0))
 	#hvunits.append(Unit(serial='AH079MZQ',name='IonChamber',hvtype='nhr',board=0))

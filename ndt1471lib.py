@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-The library for controlling the CAEN N1419 high voltage unit via
+The library for controlling the CAEN NDT1471 high voltage unit via
 the USB serial control interface.
 
 Protocol data format is 9600 baud 8N1 (8 bit, no parity, 1 stop bit)
@@ -17,9 +17,9 @@ VOLTAGE_LIMIT = 200
 LOCK_TIMEOUT = 5
 LOCK_PATH = '/tmp/'
 
-class N1419():
+class NDT1471():
 	def __init__(self,port,baud,board):
-		self.board = str(board) # lbus in the N1419 module
+		self.board = str(board) # lbus in the NDT1471 module
 		lock_file = port[4:]+'.lock'
 		self.lock = fasteners.InterProcessLock(LOCK_PATH + lock_file)
 		if self.lock.acquire(timeout=LOCK_TIMEOUT):
@@ -31,7 +31,7 @@ class N1419():
 			time.sleep(0.1)
 		else:
 			print('Lockfile could not be acquired for port ' + port)
-			print('Is there another program using n1419lib ??')
+			print('Is there another program using ndt1471lib ??')
 			return
 
 
@@ -49,7 +49,7 @@ class N1419():
 		if command == '': return ''
 		self.ser.write( command.encode('utf-8') )
 		time.sleep(0.1)
-		#self.ser.readline() # read out echoed command (no echo in N1419)
+		#self.ser.readline() # read out echoed command (no echo in NDT1471)
 		return self.ser.readline() # return response from the unit
 
 	def flush_input_buffer(self):

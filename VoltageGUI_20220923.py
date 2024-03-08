@@ -22,12 +22,12 @@ import numpy as np
 # Mesytec specific options
 RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
 RAMP_WAIT_TIME = 2	# the time between to voltage steps
-VOLTAGE_LIMIT = 350	# maximal voltage which can be applied
+VOLTAGE_LIMIT = 300	# maximal voltage which can be applied
 USING_NEW_FIRMWARE = True
 START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
 
 # CAEN specific options
-RAMP_RATE_CAEN = 1 # the default ramp rate on the CAEN N1419 modules
+RAMP_RATE_CAEN = 1.0 # the default ramp rate on the CAEN N1419 modules
 
 # GUI options
 UPDATE_TIME=3		# the voltages and currents are updated in the GUI every 3 s
@@ -680,11 +680,9 @@ def main():
 	hvunits = []
 	hvunits.append(Unit(serial='1124',name='ArrayHV0',hvtype='n1419',board=0))
 	hvunits.append(Unit(serial='1115',name='ArrayHV1',hvtype='n1419',board=1))
-	#hvunits.append(Unit(serial='0318132',name='IonChamber',hvtype='mhv4',board=0))
 	hvunits.append(Unit(serial='0318132',name='RecoildE',hvtype='mhv4',board=0))
 	hvunits.append(Unit(serial='0318131',name='RecoilE',hvtype='mhv4',board=0))
-	hvunits.append(Unit(serial='0318134',name='Ancillaries',hvtype='mhv4',board=0))
-	#hvunits.append(Unit(serial='18149',name='IonChamber',hvtype='n1419',board=0))
+	hvunits.append(Unit(serial='0318134',name='S1_dE-E',hvtype='mhv4',board=0))
 	#hvunits.append(Unit(serial='0318133',name='dE-E',hvtype='mhv4',board=0))
 	#hvunits.append(Unit(serial='AH079MZQ',name='IonChamber',hvtype='nhr',board=0))
 
@@ -709,7 +707,7 @@ def main():
 				break
 
 			# N1419 units have no serial number in USB, need to connect first
-			elif port.serial_number == None and ( port.manufacturer == 'FTDI' or port.manufacturer == 'CAEN SPA' ) and unit.hvtype == 'n1419':
+			elif port.serial_number == None and port.manufacturer == 'FTDI' and unit.hvtype == 'n1419':
 				tmpmod = n1419lib.N1419(port=port.device, baud=9600, board=unit.board)
 				if unit.serial == tmpmod.get_serial_number():
 					unit.port = port.device
