@@ -21,8 +21,8 @@ import numpy as np
 
 # Mesytec specific options
 RAMP_VOLTAGE_STEP = 1	# the amount of voltage which is changed at once while ramping
-RAMP_WAIT_TIME = 2	# the time between to voltage steps
-VOLTAGE_LIMIT = 350	# maximal voltage which can be applied
+RAMP_WAIT_TIME = 1	# the time between to voltage steps
+VOLTAGE_LIMIT = 800	# maximal voltage which can be applied
 USING_NEW_FIRMWARE = True
 START_VOLTAGE=0.1	# the voltage which is set after turning on a channel, this is to be sure, that channels which are turned on have a 				voltage unequal to zero
 
@@ -388,7 +388,8 @@ class Unit:
 		try:
 			payload = 'hv,name=' + str(name) + ',channel=' + str(channel) + ',type=' + str(meastype) + ' value=' + str(value)
 			r = requests.post( 'https://dbod-iss.cern.ch:8080/write?db=hv', data=payload, auth=("admin","issmonitor"), verify=False )
-		except InsecureRequestWarning:
+		except:
+			print("error sending to influx")
 			pass
 
 			
